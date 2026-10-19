@@ -175,3 +175,14 @@ deploy ulang. Versi & hash konfigurasi tersimpan di setiap transaksi, jadi keput
 - [docs/architecture.md](docs/architecture.md): alur data, keputusan desain, jaminan exactly-once, skalabilitas
 - [docs/data_contracts.md](docs/data_contracts.md): format tiap kanal, skema kanonik, kode DQ, reason code
 - [docs/runbook.md](docs/runbook.md): respons alarm & operasional harian
+
+
+## Monitoring dengan Airflow
+
+![DAG-1](image/DAG-1.PNG)
+
+![DAG-2](image/DAG-2.PNG)
+
+![DAG-3](image/DAG-3.PNG)
+
+![DAG-4](image/DAG-4.PNG)
