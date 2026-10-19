@@ -1,0 +1,93 @@
+# =====================================================================
+# Fraud rule configuration (versi dicatat di setiap transaksi -> audit)
+# Skor gabungan: noisy-OR  score = 100 * (1 - Π(1 - weight_i))
+# Ubah threshold di sini, naikkan `version`, deploy ulang job streaming.
+# =====================================================================
+version: "2026.10.1"
+
+risk_levels:          # batas bawah skor per level
+  LOW: 0
+  MEDIUM: 30
+  HIGH: 60
+  CRITICAL: 80
+
+decisions:            # keputusan operasional berdasarkan skor
+  review_threshold: 40   # >= : masuk antrean review analis
+  hold_threshold: 70     # >= : tahan transaksi / hubungi nasabah
+
+duplicates:
+  cross_channel_window_minutes: 3   # transaksi identik dari kanal berbeda
+  exact_key_retention_hours: 24
+
+profile:
+  amount_history_size: 50
+  max_known_devices: 20
+  max_geo_points: 10
+  late_event_tolerance_hours: 6     # event terlambat (topik/feed tertinggal) tetap dinilai dengan benar
+
+rules:
+  AMOUNT_SPIKE:
+    enabled: true
+    weight: 0.45
+    multiplier: 5            # nominal >= 5x rata-rata historis
+    min_history: 5
+    min_amount_idr: 5000000
+
+  LARGE_AMOUNT:
+    enabled: true
+    weight: 0.30
+    amount_idr: 100000000    # Rp100 juta
+
+  VELOCITY:
+    enabled: true
+    weight: 0.40
+    window_minutes: 10
+    max_txn: 5               # > 5 transaksi dalam 10 menit
+
+  IMPOSSIBLE_TRAVEL:
+    enabled: true
+    weight: 0.60
+    max_speed_kmh: 800
+    min_distance_km: 100
+
+  NEW_DEVICE_HIGH_VALUE:
+    enabled: true
+    weight: 0.35
+    min_amount_idr: 10000000
+    min_known_devices: 1
+
+  ODD_HOUR:
+    enabled: true
+    weight: 0.15
+    start_hour: 0            # jam lokal (WIB)
+    end_hour: 4
+    min_amount_idr: 5000000
+
+  HIGH_RISK_MCC:
+    enabled: true
+    weight: 0.30
+    mcc: ["7995", "6051", "4829", "6211", "7801", "7802"]   # judi, crypto/quasi-cash, wire transfer, sekuritas
+
+  FOREIGN_COUNTRY:
+    enabled: true
+    weight: 0.25
+    home_country: ID
+
+  WATCHLIST_COUNTERPARTY:
+    enabled: true
+    weight: 0.80
+    accounts: ["9990001111", "9990002222", "9990003333"]    # contoh rekening penampung (mule account)
+
+  CARD_TESTING:
+    enabled: true
+    weight: 0.50
+    window_minutes: 15
+    min_declines: 3
+
+  STRUCTURING:
+    enabled: true
+    weight: 0.45
+    window_hours: 24
+    threshold_idr: 100000000
+    lower_ratio: 0.80        # transaksi di 80%-<100% dari ambang batas
+    min_count: 3

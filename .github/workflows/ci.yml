@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install -e ".[dev,spark,local]"
+      - run: ruff check src tests airflow apps
+      - run: pytest -q          # unit + lite e2e + Spark e2e (file source)
+      - name: Rule regression gate (detection must not drop)
+        run: |
+          fraud-simulate --out data/landing --labels data/labels/labels.jsonl
+          fraud-lite --landing data/landing
+          fraud-evaluate --labels data/labels/labels.jsonl | tee eval.txt
+          python - <<'EOF'
+          import json, re
+          txt = open("eval.txt").read()
+          s = json.loads(txt[: txt.index("}") + 1])
+          assert s["fraud_attack_detection_rate"] >= 0.95, s
+          assert s["false_positive_rate"] <= 0.02, s
+          assert s["missing_in_warehouse"] == 0, s
+          assert s["exact_duplicates_caught"] == s["exact_duplicates_expected"], s
+          assert s["invalid_quarantined"] == s["invalid_expected"], s
+          EOF
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate

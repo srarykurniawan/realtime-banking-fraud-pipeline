@@ -1,0 +1,71 @@
+# =====================================================================
+# Banking Fraud & Transaction Intelligence Platform - runtime settings
+# Setiap nilai bisa di-override lewat environment variable dengan pola
+# FRAUD__<SECTION>__<KEY>, contoh: FRAUD__SOURCE__TYPE=kafka
+# =====================================================================
+environment: local            # local | staging | production
+
+source:
+  type: files                 # kafka | files  (files = mode uji lokal tanpa Kafka)
+  files_path: data/landing    # dipakai jika type=files -> data/landing/<topic>/*.jsonl
+  kafka_bootstrap_servers: localhost:9092
+  topic_pattern: "txn\\.raw\\..*"
+  starting_offsets: latest
+  max_offsets_per_trigger: 50000
+  security_protocol: PLAINTEXT  # SASL_SSL di MSK/Confluent Cloud
+  sasl_mechanism: ""            # AWS_MSK_IAM / SCRAM-SHA-512
+
+topics:
+  mobile: txn.raw.mobile
+  atm: txn.raw.atm
+  card: txn.raw.card
+  ibanking: txn.raw.ibanking
+  partner: txn.raw.partner
+  alerts: fraud.alerts
+  dlq: txn.dlq
+
+streaming:
+  app_name: fraud-detection-stream
+  trigger_interval: "10 seconds"
+  # Tidak ada watermark di jalur scoring: transaksi terlambat TIDAK dibuang (lihat docs/architecture.md)
+  checkpoint_dir: data/checkpoints  # s3://<bucket>/checkpoints di production
+  bronze_dir: data/bronze           # arsip raw (replay & audit)
+  enable_bronze_archive: true
+  publish_alerts_to_kafka: false    # true jika source.type=kafka
+  state_idle_timeout: "30 days"     # profil akun dibuang jika tidak ada aktivitas
+  shuffle_partitions: 8
+
+warehouse:
+  type: duckdb                      # duckdb | postgres | snowflake
+  duckdb_path: data/warehouse/fraud.duckdb
+  postgres_dsn: postgresql://fraud:fraud@localhost:5432/fraud_dw
+  snowflake:
+    account: ""
+    user: ""
+    role: FRAUD_PIPELINE_RW
+    warehouse: FRAUD_STREAM_WH
+    database: FRAUD_DB
+    private_key_path: ""            # key-pair auth; diambil dari Secrets Manager di AWS
+    secret_arn: ""
+
+validation:
+  max_amount_idr: 10000000000       # Rp10 miliar per transaksi
+  max_future_skew_minutes: 5
+  max_event_age_days: 7
+  supported_currencies: [IDR, USD, SGD, EUR, MYR]
+
+fx_rates_to_idr:                    # production: tabel kurs harian (ref.fx_rates)
+  IDR: 1
+  USD: 16250
+  SGD: 12500
+  EUR: 17600
+  MYR: 3700
+
+monitoring:
+  emitter: logging                  # logging | cloudwatch | none
+  cloudwatch_namespace: FraudPlatform
+  aws_region: ap-southeast-3        # Jakarta
+  max_quarantine_ratio: 0.05
+  heartbeat_sla_seconds: 300
+
+timezone: Asia/Jakarta

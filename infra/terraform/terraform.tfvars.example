@@ -1,0 +1,7 @@
+region                   = "ap-southeast-3"
+environment              = "prod"
+msk_cluster_arn          = "arn:aws:kafka:ap-southeast-3:123456789012:cluster/fraud-msk/1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d-2"
+eks_oidc_provider_arn    = "arn:aws:iam::123456789012:oidc-provider/oidc.eks.ap-southeast-3.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
+eks_oidc_provider_url    = "oidc.eks.ap-southeast-3.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
+mwaa_execution_role_name = "mwaa-fraud-execution-role"
+alert_emails             = ["fraud-oncall@bank.co.id", "data-platform@bank.co.id"]

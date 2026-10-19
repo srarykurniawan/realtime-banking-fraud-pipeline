@@ -1,0 +1,27 @@
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openjdk-17-jre-headless procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sfn "$(ls -d /usr/lib/jvm/java-17-openjdk-*)" /usr/lib/jvm/jdk17   # works on amd64 and arm64
+ENV JAVA_HOME=/usr/lib/jvm/jdk17 \
+    PYTHONUNBUFFERED=1 \
+    FRAUD_CONFIG_DIR=/app/config \
+    FRAUD_SQL_DIR=/app/sql
+# Kafka connector (+ for Amazon MSK IAM auth append: ,software.amazon.msk:aws-msk-iam-auth:2.2.0)
+ENV PYSPARK_SUBMIT_ARGS="--driver-memory 2g --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1 pyspark-shell"
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir "pyspark==4.0.1" "pandas>=2.2,<3" "pyarrow>=15,<21" \
+ && pip install --no-cache-dir ".[local,postgres,kafka,aws]"
+COPY config ./config
+COPY sql ./sql
+
+RUN useradd -m -u 1001 spark && mkdir -p /data && chown -R spark /data /app
+USER spark
+# Pre-fetch the Kafka connector into the image (ivy cache of the runtime user)
+RUN python -c "from pyspark.sql import SparkSession; SparkSession.builder.getOrCreate().stop()"
+
+CMD ["python", "-m", "fraud_platform.streaming.spark_job"]
