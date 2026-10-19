@@ -6,7 +6,7 @@
 #   docker compose up -d --build        then open:
 #     Kafka UI     http://localhost:8085
 #     Console      http://localhost:8501
-#     Airflow      http://localhost:8080   (user admin, password: see `docker compose logs airflow`)
+#     Airflow      http://localhost:8080   (login admin / admin)
 #     Metabase     http://localhost:3000
 # =====================================================================
 name: fraud-platform
@@ -15,6 +15,28 @@ x-app-env: &app-env
   FRAUD__SOURCE__KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   FRAUD__WAREHOUSE__TYPE: postgres
   FRAUD__WAREHOUSE__POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud_dw
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5-python3.11
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fraud:fraud@postgres:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"   # DAG langsung aktif
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Asia/Jakarta
+    AIRFLOW__WEBSERVER__SECRET_KEY: fraud-platform-local-secret
+    AIRFLOW__WEBSERVER__WORKERS: "2"                       # hemat RAM di laptop
+    AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "300"
+    AIRFLOW__WEBSERVER__UPDATE_FAB_PERMS: "false"         # izin disinkron sekali di airflow-init (start lebih cepat)
+    AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "600"  # laptop sibuk: beri gunicorn waktu 10 menit untuk siap
+    AIRFLOW_CONN_FRAUD_DW: postgresql://fraud:fraud@postgres:5432/fraud_dw
+    AIRFLOW_VAR_FRAUD_WAREHOUSE_CONN_ID: fraud_dw
+    AIRFLOW_VAR_FRAUD_HEARTBEAT_SLA_SECONDS: "300"
+    AIRFLOW_VAR_FRAUD_MAX_QUARANTINE_RATIO: "0.05"
+    AIRFLOW_VAR_FRAUD_STREAM_RESTART_CMD: "echo 'restart handled by docker restart policy (production: kubectl rollout restart)'"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
 
 services:
   kafka:
@@ -34,11 +56,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 168
-    healthcheck:
+    healthcheck:                     # tool Java ini lambat saat CPU sibuk -> beri waktu longgar
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
+      interval: 30s
+      timeout: 60s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
 
   kafka-init:
     image: apache/kafka:3.8.0
@@ -101,8 +125,9 @@ services:
       FRAUD__STREAMING__CHECKPOINT_DIR: /data/checkpoints
       FRAUD__STREAMING__BRONZE_DIR: /data/bronze
       FRAUD__STREAMING__PUBLISH_ALERTS_TO_KAFKA: "true"
-      FRAUD__STREAMING__TRIGGER_INTERVAL: "5 seconds"
+      FRAUD__STREAMING__TRIGGER_INTERVAL: "15 seconds"     # cukup real-time untuk demo, CPU jauh lebih ringan
     volumes: ["sparkdata:/data"]
+    cpus: "2.0"                      # batasi CPU agar Kafka/Airflow/Postgres tetap kebagian
     restart: unless-stopped          # crash -> restart -> resume from checkpoint (no data loss)
 
   console:
@@ -113,22 +138,54 @@ services:
     command: ["streamlit", "run", "apps/investigation_console/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     ports: ["8501:8501"]
 
-  airflow:
-    image: apache/airflow:2.10.5-python3.11
+  # ---------------------------------------------------------------- Airflow
+  # Metadata DB in the existing Postgres (database "airflow"), LocalExecutor,
+  # separate webserver + scheduler. Login: admin / admin
+  airflow-db:                      # one-shot: create database "airflow" if missing
+    image: postgres:16
     depends_on:
       postgres: {condition: service_healthy}
-    command: standalone
-    ports: ["8080:8080"]
     environment:
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Jakarta
-      AIRFLOW_CONN_FRAUD_DW: postgresql://fraud:fraud@postgres:5432/fraud_dw
-      AIRFLOW_VAR_FRAUD_WAREHOUSE_CONN_ID: fraud_dw
-      AIRFLOW_VAR_FRAUD_HEARTBEAT_SLA_SECONDS: "300"
-      AIRFLOW_VAR_FRAUD_MAX_QUARANTINE_RATIO: "0.05"
-      AIRFLOW_VAR_FRAUD_STREAM_RESTART_CMD: "echo 'restart: docker compose restart spark-stream (production: kubectl rollout restart)'"
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags:ro
+      PGPASSWORD: fraud
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        psql -h postgres -U fraud -d fraud_dw -tc "SELECT 1 FROM pg_database WHERE datname='airflow'" | grep -q 1
+        || psql -h postgres -U fraud -d fraud_dw -c "CREATE DATABASE airflow"
+
+  airflow-init:                    # one-shot: migrate metadata DB + create admin user
+    <<: *airflow-common
+    depends_on:
+      airflow-db: {condition: service_completed_successfully}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - >
+        airflow db migrate &&
+        airflow sync-perm &&
+        (airflow users create --username admin --password admin --firstname Fraud --lastname Admin
+        --role Admin --email admin@example.com || true)
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports: ["8080:8080"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    restart: unless-stopped
 
   metabase:
     image: metabase/metabase:v0.50.20
